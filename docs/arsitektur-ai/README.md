@@ -2,6 +2,8 @@
 
 > Dokumentasi lengkap semua komponen AI dan sistem pendukung.
 
+**[ARSITEKTUR LENGKAP (1 Dokumen)](00-ARSITEKTUR-LENGKAP.md)** — Seluruh arsitektur bot dalam 1 file komprehensif: pipeline data, 11 filter entry, 10 kondisi exit, 4 lapis proteksi risiko, AI/ML engine, SMC, position lifecycle, auto-retraining, database, konfigurasi, dan error handling.
+
 ---
 
 ## Daftar Komponen
