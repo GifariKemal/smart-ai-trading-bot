@@ -90,7 +90,7 @@ AutoTrainer(
 
 7. VALIDASI
    ├ Cek Train AUC & Test AUC
-   ├ Test AUC < 0.52? → ROLLBACK ke model lama
+   ├ Test AUC < 0.60? → ROLLBACK ke model lama (v4: dinaikkan dari 0.52)
    ├ Test AUC < 0.65? → WARNING (alert)
    └ Test AUC >= 0.65? → SUCCESS
 
@@ -130,11 +130,11 @@ Cek Test AUC
     |
     ├── AUC >= 0.65 ──> KEEP model baru ✅
     |
-    ├── AUC 0.52-0.65 ──> KEEP tapi WARNING ⚠️
+    ├── AUC 0.60-0.65 ──> KEEP tapi WARNING ⚠️
     |                      (akan trigger emergency retrain nanti)
     |
-    └── AUC < 0.52 ──> ROLLBACK ke model lama 🔄
-                        (copy dari backups/ ke models/)
+    └── AUC < 0.60 ──> ROLLBACK ke model lama 🔄
+                        (v4: dinaikkan dari 0.52, karena 0.52 hampir = acak)
 ```
 
 ### Method Rollback
@@ -161,8 +161,8 @@ AUC (Area Under Curve) mengukur **seberapa baik model membedakan sinyal BUY vs S
 |-----|------|------|
 | 0.80+ | Sangat bagus | Model dalam kondisi prima |
 | 0.65-0.80 | Bagus | Normal, lanjut trading |
-| 0.52-0.65 | Kurang | Warning, pertimbangkan retrain |
-| < 0.52 | Buruk | Rollback + retrain segera |
+| 0.60-0.65 | Minimum | Warning, pertimbangkan retrain |
+| < 0.60 | Buruk | **ROLLBACK** + retrain segera (v4 threshold) |
 | 0.50 | Sama dengan tebak koin | Model tidak berguna |
 
 ### Auto-Retrain on Low AUC
@@ -219,9 +219,10 @@ data/retrain_history.txt
 ## Integrasi di Main Loop
 
 ```python
-# main_live.py — dicek setiap 5 menit (300 loop)
+# main_live.py — dicek setiap 20 candle M15 (~5 jam)
+# v4: candle-based, bukan time-based (sebelumnya: loop_count % 300)
 
-if loop_count % 300 == 0:
+if candle_count % 20 == 0:  # Setiap 20 candle baru
     should_train, reason = auto_trainer.should_retrain()
 
     if should_train:
@@ -288,7 +289,7 @@ if loop_count % 300 == 0:
    -> Bisa rollback kapan saja
 
 4. AUTO-ROLLBACK
-   -> AUC < 0.52? Otomatis rollback
+   -> AUC < 0.60? Otomatis rollback (v4: dinaikkan dari 0.52)
    -> Model buruk tidak akan dipakai
 
 5. CLEANUP BACKUP

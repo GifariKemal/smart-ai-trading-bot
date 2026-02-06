@@ -138,6 +138,10 @@ Output: PredictionResult
 3. SMC analysis (swing, FVG, OB, BOS, CHoCH)
 4. Buat target: 1 jika close[t+1] > close[t], else 0
 5. Split: 70% train, 30% test
+   PENTING: 50-bar gap antara train & test set (v4)
+   → Mencegah temporal leakage (autocorrelation antar bar berdekatan)
+   → Train: bar 0 sampai split_point
+   → Test: bar split_point + 50 sampai akhir
 6. Train XGBoost 50 round + early stopping (patience=5)
 7. Evaluasi: Train AUC vs Test AUC
 8. Simpan model + feature names ke .pkl
@@ -204,19 +208,24 @@ Menunjukkan fitur mana yang paling berpengaruh dalam keputusan model.
 |-----|-------------|
 | 0.50 | Sama dengan tebak acak |
 | 0.55 | Sedikit lebih baik dari acak |
-| 0.60 | Cukup baik untuk trading |
+| < 0.60 | **ROLLBACK** — terlalu rendah untuk trading (v4 threshold) |
+| 0.60-0.65 | Minimum acceptable, warning |
+| 0.65+ | Cukup baik untuk trading |
 | 0.70+ | Sangat baik |
 
-**Rollback threshold:** Jika test AUC < 0.52, model otomatis rollback ke versi sebelumnya.
+**Rollback threshold:** Jika test AUC < 0.60, model otomatis rollback ke versi sebelumnya. (v4: dinaikkan dari 0.52 karena 0.52 hampir sama dengan tebak acak)
 
 ---
 
 ## Auto-Retraining
 
 - **Jadwal:** Harian pukul 05:00 WIB
-- **Data:** 5,000 bar terakhir
+- **Data:** 8,000 bar (daily) / 15,000 bar (weekend deep training)
+- **Cek retrain:** Setiap 20 candle M15 (~5 jam) — candle-based, bukan time-based
 - **Proses:** Backup lama -> retrain -> validasi AUC -> simpan/rollback
+- **Rollback:** AUC < 0.60 → otomatis rollback (v4: dinaikkan dari 0.52)
 - **Minimum interval:** 20 jam antar retrain (cegah overfitting)
+- **Train/test gap:** 50 bar antara train dan test set (anti temporal leakage)
 
 ---
 

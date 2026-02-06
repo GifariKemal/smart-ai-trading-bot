@@ -7,7 +7,7 @@
 
 ## Apa Itu Exit Trade?
 
-Exit Trade adalah keseluruhan proses **monitoring posisi terbuka** dan **memutuskan kapan menutup**. Bot memeriksa setiap posisi terbuka **setiap 1 detik** dengan 10 kondisi exit berbeda.
+Exit Trade adalah keseluruhan proses **monitoring posisi terbuka** dan **memutuskan kapan menutup**. Bot memeriksa setiap posisi terbuka **setiap ~10 detik** (di antara candle) atau **setiap candle baru** (full analysis) dengan 10 kondisi exit berbeda.
 
 **Analogi:** Exit Trade seperti **pilot otomatis di pesawat** — terus monitor ketinggian (profit), cuaca (momentum), bahan bakar (waktu), dan bisa landing darurat kapan saja.
 
@@ -98,20 +98,22 @@ AND ML confidence >= 65% berlawanan arah:
 
 ---
 
-### CHECK 3: Smart Hold for Golden Time
+### CHECK 3: Early Cut (v4 — Smart Hold DIHAPUS)
 
 ```
-Posisi sedang rugi tapi ada potensi recovery:
+Posisi sedang rugi — potong cepat jika sinyal buruk:
 
-IF profit < 0 DAN BUKAN golden time:
-  a) Loss >= 30% max DAN momentum < -30
-     -> TUTUP CEPAT (early cut)
+IF profit < 0:
+  Loss >= 30% max ($15 dari $50) DAN momentum < -30
+     -> TUTUP CEPAT (early cut, jangan tunggu recovery)
 
-  b) Loss < 30% DAN golden_time <= 3 jam DAN momentum > -50
-     -> HOLD, tunggu recovery di golden time
-
-  c) Loss < 20% DAN jam 15:00-19:00 WIB (London) DAN momentum > -40
-     -> HOLD, sesi aktif masih bisa recovery
+v4 PERUBAHAN: "Smart Hold" DIHAPUS
+  - SEBELUMNYA: Hold posisi rugi menunggu golden time (20:00-23:59)
+  - SEBELUMNYA: Hold posisi rugi kecil di sesi London (15:00-19:00)
+  - SEKARANG: Tidak ada lagi "hold losers hoping for recovery"
+  - ALASAN: Menahan posisi rugi menunggu sesi tertentu = perilaku
+    berbahaya (martingale mentality). Proper risk management:
+    ikuti aturan SL, jangan berharap recovery.
 ```
 
 ---
@@ -234,7 +236,7 @@ Tidak ada kondisi exit terpenuhi:
 
 -> HOLD posisi
 -> Log status: momentum, TP probability, ML signal
--> Evaluasi ulang di loop berikutnya (1 detik kemudian)
+-> Evaluasi ulang di cek berikutnya (~10 detik atau candle baru)
 ```
 
 ---
@@ -292,7 +294,7 @@ if risk_result["total_limit_hit"]:
 ## Diagram Exit Flow
 
 ```
-Setiap 1 detik, per posisi terbuka:
+Setiap ~10 detik (atau candle baru), per posisi terbuka:
     |
     v
 Update profit & momentum
@@ -304,8 +306,8 @@ Update profit & momentum
 [2] Profit $5-$15? ----YES---> Reversal + momentum drop?
     |NO                         -> Early exit
     v
-[3] Profit < 0? -------YES---> Golden time hold?
-    |NO                         Early cut if weak?
+[3] Profit < 0? -------YES---> Loss>30% + momentum<-30?
+    |NO                         -> EARLY CUT
     v
 [4] ML Reversal 65%+? -YES---> Loss > 40%? -> TUTUP
     |NO                         Else warning++

@@ -178,10 +178,16 @@ Setiap posisi terbuka dievaluasi setiap loop:
      DAN loss >= 40% dari max ($20):
        -> TUTUP (exit_reason: TREND_REVERSAL)
 
-3. MAX LOSS CHECK (50% threshold)
+3. EARLY CUT (v4 — Smart Hold DIHAPUS)
+   Jika loss >= 30% max ($15) DAN momentum < -30:
+     -> TUTUP CEPAT (early cut, jangan tunggu recovery)
+
+   v4: "Smart Hold" dihapus — tidak ada lagi hold losers
+       menunggu golden time atau sesi London.
+
+   MAX LOSS CHECK (50% threshold):
    Jika loss >= $25 (50% dari $50 max):
-     Kecuali golden time DAN momentum > -40:
-       -> TUTUP (exit_reason: POSITION_LIMIT)
+     -> TUTUP (exit_reason: POSITION_LIMIT)
 
 4. STALL DETECTION
    Jika harga stall 10+ candle DAN loss >= $15:
@@ -355,7 +361,7 @@ check_new_day():
 ## Integrasi dalam Main Loop
 
 ```
-Main Trading Loop (setiap 1 detik)
+Main Trading Loop (candle-based + position check setiap ~10 detik)
     |
     v
 1. check_new_day()         <- Reset harian

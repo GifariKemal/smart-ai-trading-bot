@@ -35,8 +35,16 @@ Smart Money Concepts adalah metode analisis berdasarkan **cara institusi besar (
 ```
 Window: 2 x swing_length + 1 = 11 candle (default swing_length=5)
 
-Swing High: High saat ini = Maximum dalam 11 candle
-Swing Low:  Low saat ini = Minimum dalam 11 candle
+Deteksi TANPA LOOKAHEAD (no future data):
+  - Rolling max/min menggunakan center=False (hanya data masa lalu)
+  - Swing point dikonfirmasi swing_length bar SETELAH terjadi
+  - Menggunakan shift(swing_length) untuk melihat "center" point
+
+Swing High: High di center point = Maximum dalam window 11 bar ke belakang
+Swing Low:  Low di center point = Minimum dalam window 11 bar ke belakang
+
+Catatan: Deteksi terlambat swing_length bar (5 bar), tapi
+         TIDAK menggunakan data masa depan (zero lookahead).
 ```
 
 ### Visualisasi
@@ -69,23 +77,28 @@ Swing Low:  Low saat ini = Minimum dalam 11 candle
 ### Algoritma
 
 ```
+TANPA LOOKAHEAD — Deteksi pada candle KETIGA (setelah pola selesai):
+
 Bullish FVG:                    Bearish FVG:
 Candle T-2: ████ high           Candle T-2: ████ low
                   |                           |
-                  | GAP (celah)               | GAP (celah)
+Candle T-1:    (middle)         Candle T-1:    (middle)
                   |                           |
-Candle T+1: ████ low            Candle T+1: ████ high
+Candle T:   ████ low (SAAT INI) Candle T:   ████ high (SAAT INI)
 
-Syarat Bullish: high[T-2] < low[T+1]
-Syarat Bearish: low[T-2]  > high[T+1]
+Syarat Bullish: high[T-2] < low[T]   (gap antara candle pertama & ketiga)
+Syarat Bearish: low[T-2]  > high[T]  (gap antara candle pertama & ketiga)
+
+Catatan: TIDAK menggunakan shift(-1) / data masa depan.
+         FVG dideteksi pada candle saat ini (T) setelah pola terkonfirmasi.
 ```
 
 ### Zona FVG
 
 ```
 Bullish FVG Zone:
-  Top    = low[T+1]    (batas atas gap)
-  Bottom = high[T-2]   (batas bawah gap)
+  Top    = low[T]      (low candle saat ini = batas atas gap)
+  Bottom = high[T-2]   (high candle pertama = batas bawah gap)
   Mid    = (top + bottom) / 2  (50% retracement)
 ```
 
@@ -108,19 +121,23 @@ Bullish FVG Zone:
 ### Algoritma
 
 ```
+TANPA LOOKAHEAD — Validasi menggunakan candle SAAT INI:
+
 Bullish OB:
   1. Temukan swing low
   2. Lihat 10 candle ke belakang
   3. Cari candle bearish terakhir (close < open)
-  4. Jika candle berikutnya close di atas high candle tersebut:
+  4. Jika candle SAAT INI close di atas high candle tersebut:
      -> Candle itu = Bullish Order Block
+     (validasi di bar saat ini, BUKAN bar berikutnya)
 
 Bearish OB:
   1. Temukan swing high
   2. Lihat 10 candle ke belakang
   3. Cari candle bullish terakhir (close > open)
-  4. Jika candle berikutnya close di bawah low candle tersebut:
+  4. Jika candle SAAT INI close di bawah low candle tersebut:
      -> Candle itu = Bearish Order Block
+     (validasi di bar saat ini, BUKAN bar berikutnya)
 ```
 
 ### Visualisasi
@@ -271,18 +288,19 @@ Buy Side Liquidity (BSL):        Sell Side Liquidity (SSL):
 
 ## Signal Generation
 
-### ATR-Based Dynamic SL/TP (v3 Update)
+### ATR-Based Dynamic SL/TP (v4 Update)
 
 Sebelum menghitung SL dan TP, sistem mengambil nilai ATR untuk kalkulasi dinamis:
 
 ```python
-# Line 631-634
 atr = latest["atr"]              # Dari Feature Engineering
-min_sl_distance = 1.5 * atr      # Minimum jarak SL = 1.5 ATR
-max_tp_distance = 4.0 * atr      # Maximum jarak TP = 4.0 ATR
 
-# Fallback jika ATR tidak tersedia:
-atr = current_close * 0.01       # 1% dari harga
+# Sanity check ATR (v4: validasi ketat)
+if atr is None or atr <= 0 or atr > current_close * 0.05:
+    atr = 12.0                   # Default realistis untuk XAUUSD (~$12-15 tipikal)
+
+min_sl_distance = 1.5 * atr      # Minimum jarak SL = 1.5 ATR
+min_rr_ratio    = 2.0            # ENFORCED: Minimum Risk:Reward 1:2
 ```
 
 ### Kondisi Bullish Signal
@@ -291,18 +309,20 @@ atr = current_close * 0.01       # 1% dari harga
 IF (market_structure == BULLISH ATAU ada BOS/CHoCH bullish)
 AND (ada FVG bullish ATAU Order Block bullish):
 
-  Entry  = FVG bottom atau OB bottom
+  Entry  = current_close  (v4: SELALU harga saat ini, bukan harga zone lama)
 
-  SL (v3 - ATR-based, lebih protektif):
+  SL (v4 - ATR-based, lebih protektif):
     swing_sl  = last_swing_low (jika ada & di bawah entry)
     atr_sl    = entry - 1.5 * ATR
     SL        = MIN(swing_sl, atr_sl)  <- pilih yang LEBIH JAUH
+    IF entry - SL < min_sl_distance:
+       SL = entry - min_sl_distance    <- enforce jarak minimum
 
-  TP (v3 - dibatasi realistis):
+  TP (v4 - ENFORCED minimum 1:2 RR):
     risk = entry - SL
-    tp   = entry + (risk * 2)          <- minimum 2:1 RR
-    IF tp > entry + 4*ATR:
-       tp = entry + 4*ATR              <- cap TP agar realistis
+    tp   = entry + (risk * 2.0)        <- TEPAT 2:1 R:R
+    IF actual_rr < 2.0:
+       -> SKIP sinyal (tidak valid)    <- sinyal ditolak jika RR terlalu kecil
 ```
 
 ### Kondisi Bearish Signal
@@ -311,35 +331,40 @@ AND (ada FVG bullish ATAU Order Block bullish):
 IF (market_structure == BEARISH ATAU ada BOS/CHoCH bearish)
 AND (ada FVG bearish ATAU Order Block bearish):
 
-  Entry  = FVG top atau OB top
+  Entry  = current_close  (v4: SELALU harga saat ini, bukan harga zone lama)
 
-  SL (v3 - ATR-based, lebih protektif):
+  SL (v4 - ATR-based, lebih protektif):
     swing_sl  = last_swing_high (jika ada & di atas entry)
     atr_sl    = entry + 1.5 * ATR
     SL        = MAX(swing_sl, atr_sl)  <- pilih yang LEBIH JAUH
+    IF SL - entry < min_sl_distance:
+       SL = entry + min_sl_distance    <- enforce jarak minimum
 
-  TP (v3 - dibatasi realistis):
+  TP (v4 - ENFORCED minimum 1:2 RR):
     risk = SL - entry
-    tp   = entry - (risk * 2)          <- minimum 2:1 RR
-    IF tp < entry - 4*ATR:
-       tp = entry - 4*ATR              <- cap TP agar realistis
+    tp   = entry - (risk * 2.0)        <- TEPAT 2:1 R:R
+    IF actual_rr < 2.0:
+       -> SKIP sinyal (tidak valid)    <- sinyal ditolak jika RR terlalu kecil
 ```
 
-### Perbandingan SL/TP Lama vs Baru
+### Perbandingan Evolusi SL/TP
 
 ```
-┌────────────┬───────────────────────────┬──────────────────────────────┐
-│ Komponen   │ Sebelum (v2)              │ Sesudah (v3)                 │
-├────────────┼───────────────────────────┼──────────────────────────────┤
-│ SL (BUY)   │ swing_low atau            │ MIN(swing_low, entry-1.5ATR) │
-│            │ entry * 0.995 (bisa dekat)│ <- selalu cukup jauh         │
-├────────────┼───────────────────────────┼──────────────────────────────┤
-│ SL (SELL)  │ swing_high atau           │ MAX(swing_high, entry+1.5ATR)│
-│            │ entry * 1.005 (bisa dekat)│ <- selalu cukup jauh         │
-├────────────┼───────────────────────────┼──────────────────────────────┤
-│ TP         │ risk * 2                  │ MIN(risk*2, 4*ATR)           │
-│            │ (bisa sangat jauh)        │ <- dibatasi realistis        │
-└────────────┴───────────────────────────┴──────────────────────────────┘
+┌────────────┬─────────────────────┬──────────────────────┬──────────────────────────┐
+│ Komponen   │ v2 (lama)           │ v3                   │ v4 (sekarang)            │
+├────────────┼─────────────────────┼──────────────────────┼──────────────────────────┤
+│ Entry      │ Zone price (FVG/OB) │ Zone price (FVG/OB)  │ SELALU current_close     │
+├────────────┼─────────────────────┼──────────────────────┼──────────────────────────┤
+│ SL (BUY)   │ entry * 0.995       │ MIN(swing, 1.5ATR)   │ MIN(swing, 1.5ATR)       │
+│            │ (bisa terlalu dekat)│                      │ + enforce min distance   │
+├────────────┼─────────────────────┼──────────────────────┼──────────────────────────┤
+│ TP         │ risk * 2            │ MIN(risk*2, 4*ATR)   │ risk * 2.0 (ENFORCED)    │
+│            │ (tanpa batas)       │ (dibatasi)           │ SKIP jika RR < 2.0       │
+├────────────┼─────────────────────┼──────────────────────┼──────────────────────────┤
+│ ATR default│ close * 1%          │ close * 1%           │ $12 (realistis XAUUSD)   │
+├────────────┼─────────────────────┼──────────────────────┼──────────────────────────┤
+│ Lookahead  │ Ada (shift -1)      │ Ada (shift -1)       │ TIDAK ADA (zero future)  │
+└────────────┴─────────────────────┴──────────────────────┴──────────────────────────┘
 ```
 
 ### Sistem Confidence

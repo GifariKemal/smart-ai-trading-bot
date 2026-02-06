@@ -1,0 +1,5 @@
+date:2026-02-06
+daily_loss:177.60000000000002
+daily_profit:21.73
+consecutive_losses:2
+total_loss:155.87

@@ -98,7 +98,7 @@ OTAK 3: Hidden Markov Model (HMM)
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                          MAIN LIVE (Orchestrator)                       │
 │                          main_live.py — TradingBot                      │
-│                          Loop setiap ~1 detik                           │
+│                          Candle-based (M15) + position check ~10 detik  │
 │                                                                         │
 │  ┌─────────────── PHASE 1: DATA ──────────────────────────────────┐    │
 │  │                                                                 │    │
@@ -665,10 +665,10 @@ SINYAL SMC + ML MASUK
 
 ## 6. Alur Exit: 10 Kondisi
 
-Setiap posisi terbuka dievaluasi **setiap 1 detik** terhadap 10 kondisi exit:
+Setiap posisi terbuka dievaluasi **setiap ~10 detik** (di antara candle) atau **setiap candle baru** (full analysis) terhadap 10 kondisi exit:
 
 ```
-POSISI TERBUKA (dicek setiap 1 detik)
+POSISI TERBUKA (dicek setiap ~10 detik)
         │
         │  Update: profit, momentum, peak, durasi
         │
@@ -687,9 +687,12 @@ POSISI TERBUKA (dicek setiap 1 detik)
 └──────────────────────────────────────────────────────────┘
         │ tidak trigger
         ▼
-┌─ KONDISI 3: Golden Time Hold ────────────────────────────┐
-│  Sedang di Golden Time + profit masih naik?              │
-│  → HOLD (biarkan profit berjalan)                         │
+┌─ KONDISI 3: Early Cut (v4 — Smart Hold DIHAPUS) ────────┐
+│  Loss >= 30% max ($15) DAN momentum < -30?               │
+│  → TUTUP CEPAT (early cut, jangan tunggu recovery)       │
+│                                                           │
+│  v4: "Smart Hold" dihapus — tidak ada lagi hold losers    │
+│  menunggu golden time atau sesi London.                   │
 └──────────────────────────────────────────────────────────┘
         │ tidak trigger
         ▼
@@ -939,10 +942,10 @@ Langkah 8: Session multiplier
 │ └── confidence: 0.0 - 1.0 (prob of winning side)        │
 │                                                           │
 │ Validation:                                               │
-│ ├── Train/Test: 70% / 30%                                │
+│ ├── Train/Test: 70% / 30% (50-bar gap, anti leakage)     │
 │ ├── Walk-forward: 500 train / 50 test / 50 step         │
 │ ├── Target AUC: > 0.65                                   │
-│ ├── Rollback AUC: < 0.52                                 │
+│ ├── Rollback AUC: < 0.60 (v4: dinaikkan dari 0.52)       │
 │ └── Overfitting ratio: train_AUC/test_AUC < 1.15        │
 └──────────────────────────────────────────────────────────┘
 ```
@@ -1180,7 +1183,7 @@ SELL Signal:
         │
         ▼
 ╔═══════════════════════════════════════════════════════════════╗
-║ TAHAP 6: ACTIVE MONITORING (setiap 1 detik)                   ║
+║ TAHAP 6: ACTIVE MONITORING (setiap ~10 detik + candle baru)   ║
 ║                                                                ║
 ║ ┌── Update profit/loss real-time                              ║
 ║ ├── Update peak profit (tertinggi yang pernah dicapai)        ║
@@ -1190,7 +1193,7 @@ SELL Signal:
 ║ ├── Cek Position Manager (trailing, breakeven)                ║
 ║ └── Cek Market Close Handler (dekat close?)                   ║
 ║                                                                ║
-║ Setiap detik, posisi dievaluasi:                              ║
+║ Setiap ~10 detik (atau candle baru), posisi dievaluasi:       ║
 ║   → HOLD (lanjut)                                             ║
 ║   → CLOSE (tutup dengan alasan spesifik)                      ║
 ╚═══════════════════════════════════════════════════════════════╝
@@ -1255,7 +1258,7 @@ SELL Signal:
 │  2. Fetch data baru dari MT5                                 │
 │  3. Feature Engineering + SMC                                │
 │  4. Train HMM baru + XGBoost baru                           │
-│  5. Validasi: test AUC ≥ 0.52?                              │
+│  5. Validasi: test AUC ≥ 0.60? (v4: dinaikkan dari 0.52)    │
 │     ├── Ya → Save model baru, reload di memory              │
 │     └── Tidak → ROLLBACK ke model sebelumnya                │
 │  6. Log hasil ke PostgreSQL                                  │
@@ -1264,7 +1267,7 @@ SELL Signal:
 │  Safety:                                                      │
 │  ├── Max 5 backup disimpan (rotasi)                          │
 │  ├── Min 20 jam antar retrain (cooldown)                     │
-│  ├── Auto-rollback jika AUC < 0.52                           │
+│  ├── Auto-rollback jika AUC < 0.60 (v4 threshold)           │
 │  └── Model lama selalu tersedia untuk rollback               │
 └──────────────────────────────────────────────────────────────┘
 ```
@@ -1458,8 +1461,9 @@ Balance > $10,000 → MEDIUM MODE
 ### Main Loop Breakdown
 
 ```
-Target: < 50ms per loop (0.05 detik)
+Target: < 50ms per iterasi analisis
 
+FULL ANALYSIS (saat candle baru M15):
 ┌────────────────────────────────────────────────────────────┐
 │ Komponen               │ Waktu    │ Keterangan             │
 ├────────────────────────┼──────────┼────────────────────────┤
@@ -1472,7 +1476,20 @@ Target: < 50ms per loop (0.05 detik)
 │ Entry logic            │   ~5ms   │ 11 filter check        │
 │ Overhead               │  ~15ms   │ Logging, state update  │
 ├────────────────────────┼──────────┼────────────────────────┤
-│ TOTAL                  │  ~50ms   │ 20x per detik tersedia │
+│ TOTAL                  │  ~50ms   │                        │
+└────────────────────────────────────────────────────────────┘
+
+POSITION CHECK ONLY (di antara candle, setiap ~10 detik):
+┌────────────────────────────────────────────────────────────┐
+│ Komponen               │ Waktu    │ Keterangan             │
+├────────────────────────┼──────────┼────────────────────────┤
+│ MT5 data fetch         │   ~5ms   │ 50 bar saja            │
+│ Feature engineering    │   ~3ms   │ Minimal fitur          │
+│ ML prediction          │   ~3ms   │ Untuk exit evaluation  │
+│ Position evaluation    │   ~5ms   │ 10 kondisi exit        │
+│ Overhead               │   ~5ms   │ Logging                │
+├────────────────────────┼──────────┼────────────────────────┤
+│ TOTAL                  │  ~21ms   │                        │
 └────────────────────────────────────────────────────────────┘
 ```
 
@@ -1480,15 +1497,15 @@ Target: < 50ms per loop (0.05 detik)
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│ Event                  │ Interval   │ Cara Trigger        │
-├────────────────────────┼────────────┼─────────────────────┤
-│ Data + Analysis        │ ~1 detik   │ Setiap loop         │
-│ Position monitoring    │ ~1 detik   │ Setiap loop         │
-│ News monitoring log    │ 5 menit    │ loop_count % 300    │
-│ Auto-retrain check     │ 5 menit    │ loop_count % 300    │
-│ Market update Telegram │ 30 menit   │ Timer               │
-│ Hourly analysis        │ 1 jam      │ Timer               │
-│ Daily summary + reset  │ Ganti hari │ Date check          │
+│ Event                  │ Interval       │ Cara Trigger    │
+├────────────────────────┼────────────────┼─────────────────┤
+│ Full analysis + entry  │ Candle baru M15│ Deteksi candle  │
+│ Position monitoring    │ ~10 detik      │ Di antara candle│
+│ Performance logging    │ 4 candle (~1j) │ candle_count % 4│
+│ Auto-retrain check     │ 20 candle (~5j)│ candle_count %20│
+│ Market update Telegram │ 30 menit       │ Timer           │
+│ Hourly analysis        │ 1 jam          │ Timer           │
+│ Daily summary + reset  │ Ganti hari     │ Date check      │
 └──────────────────────────────────────────────────────────┘
 ```
 
@@ -1668,7 +1685,7 @@ Smart Automatic Trading BOT + AI/
 
 6. **Fault-Tolerant** — bot tidak pernah crash. MT5 putus? Auto-reconnect. Database mati? CSV fallback. Error? Log dan lanjut.
 
-Semua ini dikoordinasikan oleh **Main Live Orchestrator** yang menjalankan loop setiap ~1 detik (~50ms per iterasi), mengevaluasi 11 filter entry dan 10 kondisi exit secara real-time, dengan notifikasi Telegram untuk setiap kejadian penting.
+Semua ini dikoordinasikan oleh **Main Live Orchestrator** yang menjalankan loop **candle-based** — analisis penuh hanya saat candle M15 baru terbentuk (~50ms per iterasi), dengan pengecekan posisi setiap ~10 detik di antara candle (~21ms). Mengevaluasi 11 filter entry dan 10 kondisi exit secara real-time, dengan notifikasi Telegram untuk setiap kejadian penting.
 
 ```
 TARGET: Trading XAUUSD M15 yang KONSISTEN dan AMAN

@@ -3,13 +3,14 @@
 > **File:** `main_live.py`
 > **Class:** `TradingBot`
 > **Runtime:** Async event loop (asyncio)
-> **Target:** < 0.05 detik per loop
+> **Mode:** Candle-based (analisis penuh hanya saat candle baru M15)
+> **Target:** < 0.05 detik per iterasi analisis
 
 ---
 
 ## Apa Itu Main Live?
 
-Main Live adalah **otak pusat** yang mengorkestrasi semua komponen bot. Menjalankan loop utama setiap ~1 detik, mengkoordinasikan 15+ komponen dari data fetching hingga order execution.
+Main Live adalah **otak pusat** yang mengorkestrasi semua komponen bot. Menjalankan loop **candle-based** — analisis penuh hanya dijalankan saat candle M15 baru terbentuk, dengan pengecekan posisi setiap 10 detik di antara candle. Mengkoordinasikan 15+ komponen dari data fetching hingga order execution.
 
 **Analogi:** Main Live seperti **konduktor orkestra** — tidak memainkan alat musik sendiri, tapi mengarahkan semua pemain (komponen) agar bermain harmonis pada waktu yang tepat.
 
@@ -50,59 +51,70 @@ class TradingBot:
 
 ---
 
-## Main Loop (Setiap ~1 Detik)
+## Main Loop (Candle-Based)
 
 ```
 STARTUP:
   Load models → Connect MT5 → Send Telegram startup
     |
     v
-LOOP UTAMA (setiap ~1 detik):
+LOOP UTAMA (cek setiap ~5 detik, analisis pada candle baru):
     |
-    |===[PHASE 1: DATA]=================================
+    ├── Fetch 2 bar terakhir → cek apakah candle baru terbentuk
     |
-    ├── Fetch 200 bar M15 XAUUSD dari MT5
-    ├── Feature Engineering (40+ fitur)
-    ├── SMC Analysis (Swing, FVG, OB, BOS, CHoCH)
-    ├── HMM Regime Detection
-    └── XGBoost Prediction
+    |===[CANDLE BARU? YA → FULL ANALYSIS]=================
     |
-    |===[PHASE 2: MONITORING]===========================
+    |  |===[PHASE 1: DATA]================================
+    |  |
+    |  ├── Fetch 200 bar M15 XAUUSD dari MT5
+    |  ├── Feature Engineering (40+ fitur)
+    |  ├── SMC Analysis (Swing, FVG, OB, BOS, CHoCH)
+    |  ├── HMM Regime Detection
+    |  └── XGBoost Prediction
+    |  |
+    |  |===[PHASE 2: MONITORING]===========================
+    |  |
+    |  ├── Cek posisi terbuka
+    |  │   └── Untuk setiap posisi:
+    |  │       ├── Update profit & momentum
+    |  │       ├── 10 kondisi exit (smart_risk.evaluate_position)
+    |  │       └── Jika should_close → tutup → log → Telegram
+    |  |
+    |  ├── Position Manager (trailing SL, breakeven)
+    |  │   └── Smart Market Close Handler
+    |  |
+    |  |===[PHASE 3: ENTRY]================================
+    |  |
+    |  ├── [1] Session Filter → boleh trading?
+    |  ├── [2] Risk Mode → bukan STOPPED?
+    |  ├── [3] SMC Signal → ada setup?
+    |  ├── [4] ML Confidence → >= threshold?
+    |  ├── [5] ML Agreement → tidak strongly disagree?
+    |  ├── [6] Dynamic Quality → bukan AVOID?
+    |  ├── [7] Confirmation → 2x candle berturut?
+    |  ├── [8] Pullback Filter → momentum selaras?
+    |  ├── [9] Cooldown → 5 menit sejak trade terakhir?
+    |  ├── [10] Position Limit → < 2 posisi?
+    |  ├── [11] Lot Size → > 0?
+    |  └── SEMUA PASS → Execute trade → Log → Telegram
+    |  |
+    |  |===[PHASE 4: PERIODIK]=============================
+    |  |
+    |  ├── Setiap 20 candle (~5 jam M15): Cek auto-retrain
+    |  ├── Setiap 30 menit: Market update (Telegram)
+    |  ├── Setiap 1 jam: Hourly analysis (Telegram)
+    |  ├── Pergantian hari: Daily summary + reset
+    |  └── News Agent: Monitor (non-blocking)
     |
-    ├── Cek posisi terbuka (setiap 1 detik)
-    │   └── Untuk setiap posisi:
-    │       ├── Update profit & momentum
-    │       ├── 10 kondisi exit (smart_risk.evaluate_position)
-    │       └── Jika should_close → tutup → log → Telegram
+    |===[CANDLE BARU? TIDAK → POSITION CHECK ONLY]========
     |
-    ├── Position Manager (trailing SL, breakeven)
-    │   └── Smart Market Close Handler
-    |
-    |===[PHASE 3: ENTRY]=================================
-    |
-    ├── [1] Session Filter → boleh trading?
-    ├── [2] Risk Mode → bukan STOPPED?
-    ├── [3] SMC Signal → ada setup?
-    ├── [4] ML Confidence → >= threshold?
-    ├── [5] ML Agreement → tidak strongly disagree?
-    ├── [6] Dynamic Quality → bukan AVOID?
-    ├── [7] Confirmation → 2x berturut?
-    ├── [8] Pullback Filter → momentum selaras?
-    ├── [9] Cooldown → 5 menit sejak trade terakhir?
-    ├── [10] Position Limit → < 2 posisi?
-    ├── [11] Lot Size → > 0?
-    └── SEMUA PASS → Execute trade → Log → Telegram
-    |
-    |===[PHASE 4: PERIODIK]==============================
-    |
-    ├── Setiap 5 menit: Cek auto-retrain
-    ├── Setiap 30 menit: Market update (Telegram)
-    ├── Setiap 1 jam: Hourly analysis (Telegram)
-    ├── Pergantian hari: Daily summary + reset
-    └── News Agent: Monitor (non-blocking)
+    ├── Setiap 10 detik: cek posisi terbuka saja
+    │   ├── Fetch 50 bar (minimal data)
+    │   ├── Hitung fitur untuk ML check
+    │   └── Evaluasi exit conditions per posisi
     |
     v
-    Tunggu ~1 detik → Loop lagi
+    Tunggu ~5 detik → Loop lagi
 ```
 
 ---
@@ -160,10 +172,10 @@ Prinsip: NEVER STOP TRADING karena error non-kritis
 
 | Event | Interval | Aksi |
 |-------|----------|------|
-| Data fetch + analysis | ~1 detik | Setiap loop |
-| Position monitoring | ~1 detik | Setiap loop |
-| News monitoring log | 5 menit | `loop_count % 300` |
-| Auto-retrain check | 5 menit | `loop_count % 300` |
+| Full analysis + entry | Setiap candle baru M15 | Saat candle terbentuk |
+| Position monitoring | ~10 detik | Di antara candle |
+| Performance logging | 4 candle (~1 jam) | `loop_count % 4` |
+| Auto-retrain check | 20 candle (~5 jam) | `loop_count % 20` |
 | Market update Telegram | 30 menit | Timer |
 | Hourly analysis Telegram | 1 jam | Timer |
 | Daily summary | Pergantian hari | Date check |
@@ -173,10 +185,10 @@ Prinsip: NEVER STOP TRADING karena error non-kritis
 ## Performa Target
 
 ```
-Target: < 0.05 detik per loop (50ms)
+Target: < 0.05 detik per iterasi analisis (50ms)
 
-Breakdown:
-├── MT5 data fetch:      ~10ms
+Full Analysis (saat candle baru):
+├── MT5 data fetch:      ~10ms  (200 bar)
 ├── Feature engineering:  ~5ms  (Polars, vectorized)
 ├── SMC analysis:         ~5ms  (Polars native)
 ├── HMM predict:          ~2ms
@@ -186,6 +198,15 @@ Breakdown:
 └── Overhead:             ~15ms
                           ------
                           ~50ms total
+
+Position Check Only (di antara candle):
+├── MT5 data fetch:      ~5ms   (50 bar saja)
+├── Feature engineering:  ~3ms
+├── ML prediction:        ~3ms
+├── Position evaluation:  ~5ms
+└── Overhead:             ~5ms
+                          ------
+                          ~21ms total
 ```
 
 ---
