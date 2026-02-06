@@ -3,9 +3,10 @@ Test MT5 Connection
 ===================
 Quick test to verify MT5 connection and data retrieval.
 """
+# Run from project root: python tests/test_mt5_connection.py
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import os
-import sys
 from loguru import logger
 
 # Configure logging

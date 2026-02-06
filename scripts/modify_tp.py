@@ -1,5 +1,8 @@
 """Modify TP of open positions to closer targets."""
-import os
+# Run from project root: python scripts/modify_tp.py
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from dotenv import load_dotenv
 load_dotenv()
 

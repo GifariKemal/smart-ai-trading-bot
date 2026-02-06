@@ -78,3 +78,9 @@ desktop.ini
 
 # Docker
 docker/data/
+
+# Archive
+archive/
+
+# Junk
+nul

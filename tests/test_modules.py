@@ -3,8 +3,10 @@ Module Test Script
 ==================
 Tests all modules to ensure they work correctly.
 """
+# Run from project root: python tests/test_modules.py
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import sys
 import polars as pl
 import numpy as np
 from datetime import datetime, timedelta

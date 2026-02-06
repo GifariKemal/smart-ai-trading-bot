@@ -1,4 +1,8 @@
 """Test new risk settings."""
+# Run from project root: python tests/test_risk_settings.py
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from src.smart_risk_manager import create_smart_risk_manager
 
 # Test dengan modal $50

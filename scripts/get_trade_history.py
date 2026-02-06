@@ -1,5 +1,8 @@
 """Get real trading history from MT5."""
-import os
+# Run from project root: python scripts/get_trade_history.py
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 load_dotenv()

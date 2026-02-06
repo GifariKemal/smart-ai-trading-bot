@@ -1,7 +1,10 @@
 """Quick status check script."""
+# Run from project root: python scripts/check_status.py
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import MetaTrader5 as mt5
 from dotenv import load_dotenv
-import os
 from datetime import datetime, timedelta
 
 load_dotenv()
