@@ -690,7 +690,7 @@ class SmartRiskManager:
             loss_percent_of_max = abs(current_profit) / self.max_loss_per_trade * 100
 
             # Cut early if momentum is against us AND loss is significant
-            if momentum < -30 and loss_percent_of_max >= 30:
+            if momentum < -50 and loss_percent_of_max >= 30:  # #24B: relaxed from -30 (backtest +$125)
                 logger.info(f"[EARLY CUT] Loss ${abs(current_profit):.2f} ({loss_percent_of_max:.0f}%) + weak momentum ({momentum:.0f}) - CUTTING EARLY")
                 return True, ExitReason.TREND_REVERSAL, f"[EARLY CUT] Loss ${abs(current_profit):.2f} + momentum {momentum:.0f} - cutting to preserve daily limit"
 
@@ -739,8 +739,12 @@ class SmartRiskManager:
             return True, ExitReason.DAILY_LIMIT, f"[LIMIT] Would exceed daily loss limit"
 
         # === CHECK 7: WEEKEND CLOSE ===
+        # Market closes Saturday 05:00 WIB — only close 30 min before (Saturday 04:30 WIB)
         now = datetime.now(WIB)
-        if now.weekday() == 4 and now.hour >= 4:  # Friday after 4 AM WIB
+        is_friday_late = now.weekday() == 4 and now.hour >= 4 and now.minute >= 30  # Sat 04:30 WIB = Fri weekday()==4 won't work
+        is_saturday_early = now.weekday() == 5 and now.hour < 5  # Saturday before 05:00 WIB
+        near_weekend_close = is_saturday_early and (now.hour >= 4 and now.minute >= 30)  # Saturday 04:30+ WIB
+        if near_weekend_close:
             if current_profit > 0:
                 return True, ExitReason.WEEKEND_CLOSE, f"[WEEKEND] Weekend close - profit ${current_profit:.2f}"
             elif current_profit > -10:

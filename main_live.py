@@ -61,7 +61,7 @@ from src.auto_trainer import AutoTrainer, create_auto_trainer
 from src.telegram_notifier import TelegramNotifier, create_telegram_notifier
 from src.smart_risk_manager import SmartRiskManager, create_smart_risk_manager
 from src.dynamic_confidence import DynamicConfidenceManager, create_dynamic_confidence
-from src.news_agent import NewsAgent, create_news_agent, MarketCondition
+# from src.news_agent import NewsAgent, create_news_agent, MarketCondition  # DISABLED
 from src.trade_logger import TradeLogger, get_trade_logger
 
 
@@ -129,11 +129,14 @@ class TradingBot:
             model_path="models/xgboost_model.pkl",
         )
 
-        # Initialize Smart Position Manager - ULTRA SAFE MODE
+        # Initialize Smart Position Manager - ATR-ADAPTIVE (#24B)
         self.position_manager = SmartPositionManager(
-            breakeven_pips=5.0,        # Move to breakeven after 5 pips profit
-            trail_start_pips=10.0,     # Start trailing after 10 pips
-            trail_step_pips=5.0,       # Trail by 5 pips
+            breakeven_pips=30.0,       # Fallback if ATR unavailable
+            trail_start_pips=50.0,     # Fallback if ATR unavailable
+            trail_step_pips=30.0,      # Fallback if ATR unavailable
+            atr_be_mult=2.0,           # Breakeven = ATR * 2.0 (#24B)
+            atr_trail_start_mult=4.0,  # Trail start = ATR * 4.0 (#24B)
+            atr_trail_step_mult=3.0,   # Trail step = ATR * 3.0 (#24B)
             min_profit_to_protect=5.0,   # Protect profits > $5
             max_drawdown_from_peak=50.0,  # Allow 50% drawdown (we use tiny lots)
             # Smart Market Close Handler
@@ -157,15 +160,9 @@ class TradingBot:
         # Initialize Telegram Notifier - smart notifications
         self.telegram = create_telegram_notifier()
 
-        # Initialize News Agent - economic calendar monitoring (NO BLOCKING)
-        # Based on comprehensive backtest (29 trades, 62.1% WR, $178 profit):
-        # - News filter COSTS us $178.15 profit
-        # - ML model already handles market volatility well
-        # - Keep monitoring for logging but DO NOT block trades
-        self.news_agent = create_news_agent(
-            news_buffer_minutes=0,  # No blocking
-            high_impact_buffer_minutes=0,  # No blocking - ML model handles volatility
-        )
+        # News Agent DISABLED - backtest proved it costs $178 profit
+        # ML model already handles volatility well
+        self.news_agent = None
 
         # Initialize Trade Logger - for ML auto-training
         self.trade_logger = get_trade_logger()
@@ -391,6 +388,10 @@ class TradingBot:
                     "cooldownSeconds": self.config.thresholds.trade_cooldown_seconds,
                     "symbol": self.config.symbol,
                 },
+                "h1Bias": getattr(self, "_h1_bias_cache", "NEUTRAL"),
+                "dynamicThreshold": getattr(self, "_last_dynamic_threshold", self.config.ml.confidence_threshold),
+                "marketQuality": getattr(self, "_last_market_quality", "unknown"),
+                "marketScore": getattr(self, "_last_market_score", 0),
             }
 
             # Atomic write (write to temp then rename)
@@ -434,10 +435,6 @@ class TradingBot:
             logger.info(f"Session: {session_status['current_session']} ({session_status['volatility']} vol)")
             logger.info(f"Can Trade: {session_status['can_trade']} - {session_status['reason']}")
 
-            # Show news agent status
-            news_can_trade, news_reason, _ = self.news_agent.should_trade()
-            logger.info(f"News Agent: {'SAFE' if news_can_trade else 'BLOCKED'} - {news_reason}")
-
             # Track daily start balance
             self._daily_start_balance = balance
             self._start_time = datetime.now()
@@ -445,14 +442,13 @@ class TradingBot:
 
             # Send Telegram startup notification
             ml_status = f"Loaded ({len(self.ml_model.feature_names)} features)" if self.ml_model.fitted else "Not loaded"
-            news_status = "SAFE" if news_can_trade else "BLOCKED"
             await self.telegram.send_startup_message(
                 symbol=self.config.symbol,
                 capital=self.config.capital,
                 balance=balance,
                 mode=self.config.capital_mode.value,
                 ml_model_status=ml_status,
-                news_status=news_status,
+                news_status="DISABLED",
             )
 
         except Exception as e:
@@ -925,18 +921,7 @@ class TradingBot:
         self._current_session_multiplier = session_multiplier
         self._is_sydney_session = "Sydney" in session_reason or session_multiplier == 0.5
 
-        # 7.6 NEWS AGENT MONITORING (NO BLOCKING)
-        # Based on backtest analysis: News filter COSTS $178 profit
-        # ML model already handles volatility well - no need to block
-        can_trade_news, news_reason, news_lot_mult = self.news_agent.should_trade()
-
-        # Log news status for monitoring but DO NOT block trades
-        if not can_trade_news and self._loop_count % 300 == 0:
-            logger.info(f"News Agent: HIGH IMPACT NEWS - {news_reason} (trading allowed)")
-
-        # Note: We no longer block trades during news events
-        # Backtest showed trades during news have 62.1% win rate (vs 64.9% normal)
-        # The $178 profit opportunity outweighs the minimal risk difference
+        # 7.6 NEWS AGENT - DISABLED (backtest: costs $178 profit, ML handles volatility)
 
         # 7.7 H1 Multi-Timeframe Bias (Fix 5)
         # Fetch H1 data and determine higher-TF bias for M15 signal filtering
@@ -977,44 +962,20 @@ class TradingBot:
         if final_signal is None:
             return
 
-        # 10.1 H1 Multi-Timeframe Filter (Fix 5)
-        # Block M15 signal if it contradicts H1 bias
+        # 10.1 H1 Multi-Timeframe Filter - DISABLED (SMC-only mode)
+        # H1 bias still logged for dashboard but does NOT block trades
         if h1_bias != "NEUTRAL":
-            if final_signal.signal_type == "BUY" and h1_bias == "BEARISH":
-                logger.info(f"Skip BUY: H1 bias is BEARISH (counter-trend)")
-                return
-            if final_signal.signal_type == "SELL" and h1_bias == "BULLISH":
-                logger.info(f"Skip SELL: H1 bias is BULLISH (counter-trend)")
-                return
-            # Boost confidence when aligned
-            if (final_signal.signal_type == "BUY" and h1_bias == "BULLISH") or \
-               (final_signal.signal_type == "SELL" and h1_bias == "BEARISH"):
-                final_signal = SMCSignal(
-                    signal_type=final_signal.signal_type,
-                    entry_price=final_signal.entry_price,
-                    stop_loss=final_signal.stop_loss,
-                    take_profit=final_signal.take_profit,
-                    confidence=min(final_signal.confidence * 1.1, 0.95),
-                    reason=f"{final_signal.reason} | H1-ALIGNED",
-                )
+            logger.info(f"H1 Bias: {h1_bias} (monitoring only, not blocking)")
 
         # 10.5 Check trade cooldown
         if self._last_trade_time:
             time_since_last = (datetime.now() - self._last_trade_time).total_seconds()
             if time_since_last < self._trade_cooldown_seconds:
-                logger.debug(f"Trade cooldown: {self._trade_cooldown_seconds - time_since_last:.0f}s remaining")
+                logger.info(f"Trade cooldown: {self._trade_cooldown_seconds - time_since_last:.0f}s remaining")
                 return
 
-        # 10.6 PULLBACK FILTER - Prevent entry during temporary retracements
-        pullback_ok, pullback_reason = self._check_pullback_filter(
-            df=df,
-            signal_direction=final_signal.signal_type,
-            current_price=current_price,
-        )
-        if not pullback_ok:
-            if self._loop_count % 30 == 0:  # Log every 30 loops
-                logger.info(f"Pullback Filter: {pullback_reason}")
-            return
+        # 10.6 PULLBACK FILTER - DISABLED (SMC-only mode)
+        # SMC structure already validates entry zones
 
         # 11. SMART RISK CHECK - Ultra safe mode
         self.smart_risk.check_new_day()
@@ -1111,6 +1072,9 @@ class TradingBot:
 
         # Get dynamic threshold
         dynamic_threshold = market_analysis.confidence_threshold
+        self._last_dynamic_threshold = dynamic_threshold
+        self._last_market_quality = market_analysis.quality.value
+        self._last_market_score = market_analysis.score
 
         # Log dynamic analysis periodically
         if self._loop_count % 60 == 0:
@@ -1140,80 +1104,12 @@ class TradingBot:
             return None
 
         # ============================================================
-        # IMPROVED SIGNAL LOGIC v3 - With ML Threshold & Confirmation
+        # SIGNAL LOGIC v4 - SMC-Only (ML DISABLED)
         # ============================================================
         golden_marker = "[GOLDEN] " if is_golden_time else ""
         if smc_signal is not None:
-            # === IMPROVEMENT 1: ML Confidence Threshold ===
-            # Based on backtest tuning (Jan 2025 - Feb 2026):
-            # - 50% threshold: 485 trades, 61.6% WR, $3120 profit, PF 2.02
-            # - 55% threshold: 306 trades, 59.5% WR, $1443 profit, PF 1.74
-            # OPTIMAL: 50% threshold (more trades, higher WR, better profit)
-            ml_min_threshold = 0.50
-            if ml_prediction.confidence < ml_min_threshold:
-                if self._loop_count % 60 == 0:
-                    logger.info(f"Skip: ML uncertain ({ml_prediction.confidence:.0%} < {ml_min_threshold:.0%}) - waiting for clearer signal")
-                return None
-
-            # Check if ML strongly disagrees (>65% opposite)
-            ml_strongly_disagrees = (
-                (smc_signal.signal_type == "BUY" and ml_prediction.signal == "SELL" and ml_prediction.confidence > 0.65) or
-                (smc_signal.signal_type == "SELL" and ml_prediction.signal == "BUY" and ml_prediction.confidence > 0.65)
-            )
-
-            if ml_strongly_disagrees:
-                if self._loop_count % 60 == 0:
-                    logger.info(f"Skip: ML strongly disagrees ({ml_prediction.signal} {ml_prediction.confidence:.0%}) vs SMC {smc_signal.signal_type}")
-                return None
-
-            # === IMPROVEMENT 1.5: SELL Filter (OPTIMIZED) ===
-            # SELL signals historically have lower win rate than BUY
-            # Require ML agreement and higher confidence for SELL
-            if smc_signal.signal_type == "SELL":
-                if ml_prediction.signal != "SELL":
-                    if self._loop_count % 60 == 0:
-                        logger.info(f"Skip SELL: ML does not agree ({ml_prediction.signal} {ml_prediction.confidence:.0%})")
-                    return None
-                if ml_prediction.confidence < 0.55:
-                    if self._loop_count % 60 == 0:
-                        logger.info(f"Skip SELL: ML confidence too low ({ml_prediction.confidence:.0%} < 55%)")
-                    return None
-
-            # === IMPROVEMENT 2: Signal Confirmation (Entry Delay) ===
-            # Track signal persistence - only entry if signal consistent for 2+ candles
-            # Fix 3: Use direction-only key (not exact price) and persist to file
-            signal_key = smc_signal.signal_type  # "BUY" or "SELL" — direction matters, not exact price
-            current_time = time.time()
-
-            if not hasattr(self, '_signal_persistence'):
-                self._signal_persistence = self._load_signal_persistence()
-
-            # Cleanup: Remove entries older than 30 minutes (1800 seconds)
-            self._signal_persistence = {
-                k: v for k, v in self._signal_persistence.items()
-                if current_time - v[1] < 1800
-            }
-
-            if signal_key not in self._signal_persistence:
-                self._signal_persistence[signal_key] = (1, current_time)
-                self._save_signal_persistence()
-                logger.debug(f"Signal confirmation: {signal_key} seen 1st time - waiting")
-                return None  # Wait for confirmation
-            else:
-                count, _ = self._signal_persistence[signal_key]
-                self._signal_persistence[signal_key] = (count + 1, current_time)
-
-            # Require at least 2 consecutive confirmations (2 candles)
-            count, _ = self._signal_persistence[signal_key]
-            if count < 2:
-                self._save_signal_persistence()
-                logger.debug(f"Signal confirmation: {signal_key} count={count} - waiting")
-                return None
-
-            # Signal confirmed! Reset counter
-            logger.info(f"Signal CONFIRMED: {signal_key} after {count} checks")
-            self._signal_persistence[signal_key] = (0, current_time)
-            self._save_signal_persistence()
+            # ML filters DISABLED — trading based on SMC only
+            # Signal persistence DISABLED — SMC signal = immediate trade
 
             # SMC-Only: Use SMC signal with confidence adjustment
             ml_agrees = (
@@ -2142,10 +2038,6 @@ class TradingBot:
             # Risk state
             risk_rec = self.smart_risk.get_trading_recommendation()
 
-            # News Agent status
-            news_can_trade, news_reason, _ = self.news_agent.should_trade()
-            news_status = "SAFE" if news_can_trade else "BLOCKED"
-
             # Execution stats
             avg_exec = (sum(self._execution_times) / len(self._execution_times) * 1000) if self._execution_times else 0
             uptime = (now - self._start_time).total_seconds() / 3600  # hours
@@ -2180,9 +2072,9 @@ class TradingBot:
                 uptime_hours=uptime,
                 total_loops=self._loop_count,
                 avg_execution_ms=avg_exec,
-                # News
-                news_status=news_status,
-                news_reason=news_reason,
+                # News - disabled
+                news_status="DISABLED",
+                news_reason="News agent disabled",
             )
 
             self._last_hourly_report_time = now

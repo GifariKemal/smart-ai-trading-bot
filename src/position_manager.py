@@ -166,8 +166,9 @@ class SmartMarketCloseHandler:
             delta = target - now
             hours_to_weekend = delta.total_seconds() / 3600
 
-            # Consider "near weekend" if within 12 hours of close (Friday afternoon WIB)
-            near_weekend = hours_to_weekend <= 12 and weekday == 4  # Friday only
+            # Consider "near weekend" if within 30 min of close (Saturday ~04:30 WIB)
+            # Market closes Saturday 05:00 WIB — Friday night trading is OK
+            near_weekend = hours_to_weekend <= 0.5 and weekday == 4  # Friday only
 
             return near_weekend, hours_to_weekend
 
@@ -269,11 +270,15 @@ class SmartPositionManager:
 
     def __init__(
         self,
-        breakeven_pips: float = 15.0,      # Move SL to breakeven after this profit
-        trail_start_pips: float = 25.0,    # Start trailing after this profit
-        trail_step_pips: float = 10.0,     # Trail by this amount
+        breakeven_pips: float = 15.0,      # Fallback if ATR unavailable
+        trail_start_pips: float = 25.0,    # Fallback if ATR unavailable
+        trail_step_pips: float = 10.0,     # Fallback if ATR unavailable
         min_profit_to_protect: float = 50.0,  # Minimum $ profit to protect
         max_drawdown_from_peak: float = 30.0,  # Max % drawdown from peak profit
+        # ATR-adaptive exit multipliers (#24B: backtest +$373)
+        atr_be_mult: float = 2.0,          # Breakeven = ATR * 2.0
+        atr_trail_start_mult: float = 4.0, # Trail start = ATR * 4.0
+        atr_trail_step_mult: float = 3.0,  # Trail step = ATR * 3.0
         # Market Close Handler settings
         enable_market_close_handler: bool = True,
         min_profit_before_close: float = 10.0,  # Take profit if >= $10 near close
@@ -282,6 +287,9 @@ class SmartPositionManager:
         self.breakeven_pips = breakeven_pips
         self.trail_start_pips = trail_start_pips
         self.trail_step_pips = trail_step_pips
+        self.atr_be_mult = atr_be_mult
+        self.atr_trail_start_mult = atr_trail_start_mult
+        self.atr_trail_step_mult = atr_trail_step_mult
         self.min_profit_to_protect = min_profit_to_protect
         self.max_drawdown_from_peak = max_drawdown_from_peak
 
@@ -325,9 +333,16 @@ class SmartPositionManager:
         # Get market analysis
         market_analysis = self._analyze_market(df_market, regime_state, ml_prediction)
 
+        # Get current ATR for adaptive exit levels (#24B)
+        current_atr = None
+        if "atr" in df_market.columns:
+            atr_val = df_market["atr"].tail(1).item()
+            if atr_val is not None and atr_val > 0:
+                current_atr = atr_val
+
         for row in positions.iter_rows(named=True):
             action = self._analyze_single_position(
-                row, market_analysis, current_price
+                row, market_analysis, current_price, current_atr
             )
             if action:
                 actions.append(action)
@@ -421,6 +436,7 @@ class SmartPositionManager:
         pos: Dict,
         market: Dict,
         current_price: float,
+        current_atr: float = None,
     ) -> Optional[PositionAction]:
         """Analyze a single position and decide action."""
         ticket = pos["ticket"]
@@ -525,30 +541,41 @@ class SmartPositionManager:
                 reason=f"High urgency exit (score: {market['urgency']}) - Securing ${profit:.2f}",
             )
 
-        # === TRAILING STOP CONDITIONS ===
+        # === TRAILING STOP CONDITIONS (ATR-adaptive #24B) ===
+
+        # Compute adaptive levels from ATR (fall back to fixed pips if ATR unavailable)
+        if current_atr is not None and current_atr > 0:
+            # ATR is in price terms; convert to pips (1 pip = 0.1 for gold)
+            be_pips = current_atr * self.atr_be_mult / 0.1
+            trail_start = current_atr * self.atr_trail_start_mult / 0.1
+            trail_step = current_atr * self.atr_trail_step_mult / 0.1
+        else:
+            be_pips = self.breakeven_pips
+            trail_start = self.trail_start_pips
+            trail_step = self.trail_step_pips
 
         # 5. Breakeven protection
-        if pip_profit >= self.breakeven_pips and current_sl != 0:
+        if pip_profit >= be_pips and current_sl != 0:
             breakeven_sl = entry_price + (1 if is_buy else -1) * 2  # 2 points buffer
 
             if is_buy and current_sl < breakeven_sl:
                 return PositionAction(
                     ticket=ticket,
                     action="TRAIL_SL",
-                    reason=f"Moving SL to breakeven ({pip_profit:.1f} pips profit)",
+                    reason=f"Moving SL to breakeven ({pip_profit:.1f}/{be_pips:.0f} pips)",
                     new_sl=breakeven_sl,
                 )
             elif not is_buy and current_sl > breakeven_sl:
                 return PositionAction(
                     ticket=ticket,
                     action="TRAIL_SL",
-                    reason=f"Moving SL to breakeven ({pip_profit:.1f} pips profit)",
+                    reason=f"Moving SL to breakeven ({pip_profit:.1f}/{be_pips:.0f} pips)",
                     new_sl=breakeven_sl,
                 )
 
-        # 6. Trailing stop (after trail_start_pips)
-        if pip_profit >= self.trail_start_pips:
-            trail_distance = self.trail_step_pips * 0.1  # Convert to price
+        # 6. Trailing stop (after trail_start pips)
+        if pip_profit >= trail_start:
+            trail_distance = trail_step * 0.1  # Convert to price
 
             if is_buy:
                 new_trail_sl = current_price - trail_distance
@@ -556,7 +583,7 @@ class SmartPositionManager:
                     return PositionAction(
                         ticket=ticket,
                         action="TRAIL_SL",
-                        reason=f"Trailing SL ({pip_profit:.1f} pips profit)",
+                        reason=f"Trailing SL ({pip_profit:.1f}/{trail_start:.0f} pips)",
                         new_sl=new_trail_sl,
                     )
             else:
@@ -565,7 +592,7 @@ class SmartPositionManager:
                     return PositionAction(
                         ticket=ticket,
                         action="TRAIL_SL",
-                        reason=f"Trailing SL ({pip_profit:.1f} pips profit)",
+                        reason=f"Trailing SL ({pip_profit:.1f}/{trail_start:.0f} pips)",
                         new_sl=new_trail_sl,
                     )
 

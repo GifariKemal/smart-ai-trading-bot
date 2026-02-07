@@ -104,8 +104,8 @@ class SessionFilter:
                 start_hour=15, start_minute=0,
                 end_hour=16, end_minute=0,
                 volatility="high",
-                allow_trading=True,
-                position_size_multiplier=1.0,
+                allow_trading=False,           # #24B: Skip Tokyo-London overlap (backtest +$345)
+                position_size_multiplier=0.0,
             ),
             TradingSession.OVERLAP_LONDON_NY: SessionConfig(
                 name="London-NY Overlap (GOLDEN)",
@@ -196,10 +196,11 @@ class SessionFilter:
         return False, ""
 
     def is_friday_close(self) -> bool:
-        """Check if approaching Friday market close."""
+        """Check if approaching Friday market close (Saturday 05:00 WIB)."""
         now = self.get_current_time_wib()
-        # Friday = 4 (Monday=0)
-        if now.weekday() == 4 and now.hour >= 23:
+        # Market closes Saturday 05:00 WIB — only block 30 min before
+        # Saturday 04:30+ WIB
+        if now.weekday() == 5 and now.hour == 4 and now.minute >= 30:
             return True
         return False
 
@@ -248,13 +249,13 @@ class SessionFilter:
         if not config.allow_trading:
             return False, f"Trading tidak diizinkan saat {config.name}", 0.0
 
-        # In aggressive mode, allow high volatility + Sydney (proven profitable)
+        # In aggressive mode, allow medium+ volatility + Sydney (proven profitable)
         if self.aggressive_mode:
             # Sydney session is ALLOWED - backtest shows 62% WR, $5,934 profit
             if session == TradingSession.SYDNEY:
                 return True, f"Trading OK - {config.name} (SAFE MODE: 0.5x lot)", config.position_size_multiplier
-            # Other low volatility sessions not allowed
-            if config.volatility not in ["high", "extreme"]:
+            # Only block low volatility sessions
+            if config.volatility not in ["medium", "high", "extreme"]:
                 return False, f"Mode agresif: tunggu sesi {config.name} (volatilitas {config.volatility})", config.position_size_multiplier
 
         return True, f"Trading OK - {config.name} ({config.volatility} volatility)", config.position_size_multiplier
